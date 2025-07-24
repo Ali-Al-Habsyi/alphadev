@@ -15,6 +15,8 @@
 
 """Pseudocode description of the AlphaDev algorithm."""
 
+"""Tweak towards based demonstration of Optimal Online Exploration."""
+
 ###########################
 ########## Content ########
 # 1. Environment
@@ -41,6 +43,12 @@ import ml_collections
 import numpy
 import optax
 
+# THE D2L ROUTE
+
+from flax import linen as nn
+from jax import numpy as jnp
+from d2l import jax as d2l
+
 
 ############################
 ###### 1. Environment ######
@@ -57,10 +65,29 @@ class TaskSpec(NamedTuple):
   latency_reward_weight: float
   latency_quantile: float
 
+################################################################################
+class RNN(nn.Module):  #@save
+    """The RNN model implemented with high-level APIs."""
+    num_hiddens: int
+    @nn.compact
+    def __call__(self, inputs, H=None):
+        raise NotImplementedError
+class RNNLM(d2l.RNNLMScratch):  #@save
+    """The RNN-based language model implemented with high-level APIs."""
+    training: bool = True
+    def setup(self):
+        self.linear = nn.Dense(self.vocab_size)
+    def output_layer(self, hiddens):
+        return self.linear(hiddens).swapaxes(0, 1)
+    def forward(self, X, state=None):
+        embs = self.one_hot(X)
+        rnn_outputs, _ = self.rnn(embs, state, self.training)
+        return self.output_layer(rnn_outputs)
+################################################################################
 
 class AssemblyGame(object):
   """The environment AlphaDev is interacting with."""
-
+  
   class AssemblyInstruction(object):
     pass
 
@@ -78,13 +105,45 @@ class AssemblyGame(object):
     self.program = []
     self.simulator = self.AssemblySimulator(task_spec)
     self.previous_correct_items = 0
+    self.rnn_length = 4 # initialize differently later desired
+    self.RNN  = RNN(num_hiddens=self.rnn_length)
+    task_spec --> int
+
+  def loss_configuration(self, execution_starting_state, execution_state):
+    loss_configuration = execution_starting_state - execution_state # MOST SIMPLE BUT EXEMPLARY
+    return loss_configuration
+
+  def RNNtrainer(self,action): # ASSUMES INITIAL STATE THAT IS EITHER PRE-DOWNLOADED OR RECENTLY SET IN CURRENT FUNCTION
+    
+    instruction = self.AssemblyInstruction(action)
+    self.program.append(instruction)
+    self.execution_starting_state = self.simulator.apply(instruction)
+    rewards = []
+
+    for _ in range(self.task_spec.num_actions): # INITILZATION BY EXPLORATIVE TRAVERSAL BY CHOOSING ACTIONS OVER range(task_spec.num_actions) AND AFTERWARDS RNN_TRAINING AFTER ACTION-EXPLORATION
+      instruction = self.AssemblyInstruction(action)
+      AssemblyGame.program.append(instruction)
+      if len(AssemblyGame.program) > RNN_length:
+        self.execution_state = self.simulator.apply(instruction)
+        with d2l.try_gpu():
+          trainer = d2l.Trainer(max_epochs=1, gradient_clip_val=1) # NOTE IMPLICATIONS IN WRITING (PSEUDO)CODE. FOCUS ON STRUCTURE, NOT ON DEFINITIONS.
+          data = (self.execution_starting_state, self.execution_state)
+          trainer.fit(self.RNN, data)    
+      rewards.append(loss_configuration(self.execution_starting_state, self.execution_state))
+    
+    self.execution_starting_state = self.execution_state
+    return rewards
+
 
   def step(self, action):
     instruction = self.AssemblyInstruction(action)
     self.program.append(instruction)
     self.execution_state = self.simulator.apply(instruction)
-    return self.observation(), self.correctness_reward()
+    return self.observation(), self.correctness_reward() # --> list all actions and perform step(self,action) on all actions 
 
+# Actions are defined by integer index
+
+  
   def observation(self):
     return {
         'program': self.program,
@@ -871,6 +930,8 @@ class ReplayBuffer(object):
             observation=g.make_observation(i),
             bootstrap_observation=g.make_observation(i + td_steps),
             target=g.make_target(i, td_steps, g.to_play()),
+            index = i,
+            action = ActionHistory.history[i]
         )
         for (g, i) in game_pos
     ]
@@ -940,6 +1001,97 @@ def run_selfplay(
     replay_buffer.save_game(game)
 
 
+
+
+
+
+
+#class TaskSpec(NamedTuple):
+#  max_program_size: int
+#  num_inputs: int
+#  num_funcs: int
+#  num_locations: int
+#  num_actions: int
+#  correct_reward: float
+#  correctness_reward_weight: float
+#  latency_reward_weight: float
+#  latency_quantile: float
+
+################################################################################
+#class RNN(nn.Module):  #@save
+##    """The RNN model implemented with high-level APIs."""
+#    num_hiddens: int
+#    @nn.compact
+#    def __call__(self, inputs, H=None):
+#        raise NotImplementedError
+#class RNNLM(d2l.RNNLMScratch):  #@save
+#    """The RNN-based language model implemented with high-level APIs."""
+#    training: bool = True
+#    def setup(self):
+#        self.linear = nn.Dense(self.vocab_size)
+#    def output_layer(self, hiddens):
+#        return self.linear(hiddens).swapaxes(0, 1)
+#    def forward(self, X, state=None):
+#        embs = self.one_hot(X)
+#        rnn_outputs, _ = self.rnn(embs, state, self.training)
+#        return self.output_layer(rnn_outputs)
+################################################################################
+
+#class AssemblyGame(object):
+##  """The environment AlphaDev is interacting with."""
+  
+#  class AssemblyInstruction(object):
+#    pass
+
+#  class AssemblySimulator(object):
+
+#  pylint: disable-next=unused-argument
+#    def apply(self, instruction):
+#      return {}
+
+#    def measure_latency(self, program) -> float:
+#      pass
+
+#  def __init__(self, task_spec):
+#    self.task_spec = task_spec
+#    self.program = []
+#    self.simulator = self.AssemblySimulator(task_spec)
+#    self.previous_correct_items = 0
+#    self.rnn_length = 4 # initialize differently later desired
+#    self.RNN  = RNN(num_hiddens=self.rnn_length)
+#    task_spec --> int
+#
+# def loss_configuration(self, execution_starting_state, execution_state):
+#    loss_configuration = execution_starting_state - execution_state # MOST SIMPLE BUT EXEMPLARY
+#    return loss_configuration#
+#
+#  def RNNtrainer(self,action): # ASSUMES INITIAL STATE THAT IS EITHER PRE-DOWNLOADED OR RECENTLY SET IN CURRENT FUNCTION
+#    
+#    instruction = self.AssemblyInstruction(action)
+#    self.program.append(instruction)
+#    self.execution_starting_state = self.simulator.apply(instruction)
+#    rewards = []
+#
+#    for _ in range(task_spec.num_actions): # INITILZATION BY EXPLORATIVE TRAVERSAL BY CHOOSING ACTIONS OVER range(task_spec.num_actions) AND AFTERWARDS RNN_TRAINING AFTER ACTION-EXPLORATION
+#      instruction = self.AssemblyInstruction(action)
+#      self.program.append(instruction)
+#      if len(self.program) > RNN_length:
+#        self.execution_state = self.simulator.apply(instruction)
+#        with d2l.try_gpu():
+#          trainer = d2l.Trainer(max_epochs=1, gradient_clip_val=1) # NOTE IMPLICATIONS IN WRITING (PSEUDO)CODE. FOCUS ON STRUCTURE, NOT ON DEFINITIONS.
+#          data = (self.execution_starting_state, self.execution_state)
+#          trainer.fit(self.RNN, data)    
+#     rewards.append(loss_configuration(self.execution_starting_state, self.execution_state))
+#   
+#    self.execution_starting_state = self.execution_state
+#    return rewards
+
+
+
+
+
+
+
 def play_game(config: AlphaDevConfig, network: Network) -> Game:
   """Plays an AlphaDev game.
 
@@ -956,6 +1108,9 @@ def play_game(config: AlphaDevConfig, network: Network) -> Game:
   """
 
   game = config.new_game()
+  reward_matrix = []
+
+  #reward_matrix HAS NUMBER OF ROWS len(game.history) AND NUMBER OF COLUMNS AssemblyGame.task_spec.num_actions
 
   while not game.terminal() and len(game.history) < config.max_moves:
     min_max_stats = MinMaxStats(config.known_bounds)
@@ -986,9 +1141,36 @@ def play_game(config: AlphaDevConfig, network: Network) -> Game:
         game.environment,
     )
     action = _select_action(config, len(game.history), root, network)
+    
+    #state is summarized in config, we reside now in helpre function section of codebase.
+    #on top of game played, let RNN learn over configurations visited by alphadev
+    #alpha_dev gamestate can be summarized in tuple
+    #(config, len(game.history), root, network)
+    
+    instruction = AssemblyGame.AssemblyInstruction(action)
+    AssemblyGame.program.append(instruction)
+    AssemblyGame.execution_starting_state = AssemblyGame.simulator.apply(instruction)
+    rewards = []
+
+    for _ in range(task_spec.num_actions): # INITILZATION BY EXPLORATIVE TRAVERSAL BY CHOOSING ACTIONS OVER range(task_spec.num_actions) AND AFTERWARDS RNN_TRAINING AFTER ACTION-EXPLORATION
+      instruction = AssemblyGame.AssemblyInstruction(action)
+      AssemblyGame.program.append(instruction)
+      if len(AssemblyGame.program) > RNN_length:
+        AssemblyGame.execution_state = AssemblyGame.simulator.apply(instruction)
+        with d2l.try_gpu():
+          trainer = d2l.Trainer(max_epochs=1, gradient_clip_val=1) # NOTE IMPLICATIONS IN WRITING (PSEUDO)CODE. FOCUS ON STRUCTURE, NOT ON DEFINITIONS.
+          data = (AssemblyGame.execution_starting_state, AssemblyGame.execution_state)
+          trainer.fit(AssemblyGame.RNN, data)    
+      rewards.append(loss_configuration(AssemblyGame.execution_starting_state, AssemblyGame.execution_state))
+    AssemblyGame.execution_starting_state = AssemblyGame.execution_state
+    reward_matrix.append(rewards)
+    
     game.apply(action)
     game.store_search_statistics(root)
-  return game
+
+  # REWARDS TO BE FOUND IN REWARD_MATRIX OR REWARDS MUST FUNCTION AS ORDINARY REARDS IN PROGRAMME
+    
+  return game, reward_matrix
 
 
 def run_mcts(
@@ -1136,9 +1318,12 @@ def _add_exploration_noise(config: AlphaDevConfig, node: Node):
 ########### End Self-Play ###########
 #####################################
 
+# NOTICE THAT REWARD-SPECIFCATION HAS INFLUENCE ON LEARNING OF Q-FUNCTION
+# THEREFORE, TWEAK SPECIFCATION OF REWARDS IN THE BELOW CODE ACCORDING TO REARDS ABOVE DEFINED
+
 #####################################
 ####### 5. Part 2: Training #########
-
+# FINAL PART, TWEAK THE TRAINER
 
 def train_network(
     config: AlphaDevConfig, storage: SharedStorage, replay_buffer: ReplayBuffer
@@ -1174,7 +1359,9 @@ def _loss_fn(
 ) -> float:
   """Computes loss."""
   loss = 0
-  for observation, bootstrap_obs, target in batch:
+
+  # Include sample_sequence indexation in batch
+  for index, action, observation, bootstrap_obs, target in batch:   # TO BATCH PROVIDE index, action ON TOP OF observation, bootstrap_obs, target
     predictions = network.inference(network_params, observation)
     bootstrap_predictions = target_network.inference(
         target_network_params, bootstrap_obs)
@@ -1185,7 +1372,7 @@ def _loss_fn(
         bootstrap_discount * bootstrap_predictions.correctness_value_logits
     )
 
-    l = optax.softmax_cross_entropy(predictions.policy_logits, target_policy)
+    l = optax.softmax_cross_entropy(predictions.policy_logits + reward_matrix[index][action], target_policy) # ADAPTIVE REWARDS STEER OBJECTIVE FUNCTION. IF CONVERGENCE GRANTED, WE HAVE NOW PROVIDED ALL CAUSE FOR STEERING.
     l += scalar_loss(
         predictions.correctness_value_logits, target_correctness, network
     )
@@ -1232,6 +1419,9 @@ def scalar_loss(prediction, target, network) -> float:
 ############################# End of pseudocode ################################
 ################################################################################
 
+################################################################################
+################ THIS CONCLUDES TWEAKS: ONLINE OPTIMAL EXPLORATION #############
+################################################################################
 
 # Stubs to make the typechecker happy.
 # pylint: disable-next=unused-argument
